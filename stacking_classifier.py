@@ -1,8 +1,9 @@
 # -*- coding: utf-8 -*-
 """
-@author: Anna Klepova (inspired by Faron)
+@author: Anna Klepova (inspired by Faron from Kaggle)
 """
 
+import sys
 import operator
 import numpy as np
 from sklearn import cross_validation
@@ -20,17 +21,23 @@ class StackingClassifier:
 
     def set_fields_by_default(self):
 
+        self.version = '0.0.1'
         self.random_state = 0
         self.use_only_primary_clfs_results = True
         self.primary_is_proba = False
         self.label_encoder = LabelEncoder()
         self.classes_ = None
+        self.mode_ = None # BINARY or MULTI
 
 
     def train_subsets(self, clf, X, y):
 
         nfolds = 5
-        intermediate_answers = np.zeros((X.shape[0],))
+        if self.mode_ == 'BINARY':
+            intermediate_answers = np.zeros((X.shape[0],))
+        else:
+            assert self.mode_ == 'MULTI'
+            intermediate_answers = np.zeros((X.shape[0], len(self.classes_)))
         skf = cross_validation.StratifiedKFold(y,
                                                n_folds = nfolds,
                                                shuffle = True,
@@ -43,29 +50,70 @@ class StackingClassifier:
             clf.fit(x_tr, y_tr)
             clfs.append(clf)
             if self.primary_is_proba:
-                intermediate_answers[test_index] = map(operator.itemgetter(1),
-                                                       clf.predict_proba(x_te))
+                if 'predict_proba' in dir(clf):
+                    probas = clf.predict_proba(x_te)
+                    if self.mode_ == 'BINARY':
+                        intermediate_answers[test_index] = map(operator.itemgetter(1),
+                                                               probas)
+                    else:
+                        assert self.mode_ == 'MULTI'
+                        intermediate_answers[test_index] = probas
+                elif 'decision_function' in dir(clf):
+                    scores = clf.decision_function(x_te)
+                    if self.mode_ == 'BINARY':
+                        assert type(scores[0]) is np.float64
+                    else:
+                        assert self.mode_ == 'MULTI'
+                        assert type(scores[0]) is np.ndarray
+                    intermediate_answers[test_index] = scores
+                else:
+                    print >> sys.stderr, 'Error in StackingClassifier: parameter "primary_is_proba" is True, however one of primary classifiers has neither "predict_proba" method nor "decision_function". This classifier is "{}"\n'.format(type(clf))
+                    exit(1)
             else:
                 intermediate_answers[test_index] = clf.predict(x_te)
-
-        return intermediate_answers.reshape(-1, 1), tuple(clfs)
+        #print 'self.mode_', self.mode_
+        #print 'type(intermediate_answers)', type(intermediate_answers)
+        #print 'intermediate_answers.shape', intermediate_answers.shape
+        if self.mode_ == 'BINARY':
+            return intermediate_answers.reshape(-1, 1), tuple(clfs)
+        else:
+            assert self.mode_ == 'MULTI'
+            return intermediate_answers, tuple(clfs)
 
 
     def fit(self, X, y):
 
         y_encoded = self.label_encoder.fit_transform(y)
         self.classes_ = self.label_encoder.classes_
+        if len(self.classes_) < 2:
+            print >> sys.stderr, 'Error in StackingClassifier: There are {} classes. There should be at least 2 classes\n'
+            exit(1)
+        elif len(self.classes_) == 2:
+            self.mode_ = 'BINARY'
+        else:
+            self.mode_ = 'MULTI'
         intermediate_answers = dict()
         for i in range(len(self.primary_clfs)):
             (intermediate_answers[self.primary_clfs[i]['name']],
              self.primary_clfs[i]['clfs']) = self.train_subsets(self.primary_clfs[i]['clf'],
                                                                 X,
                                                                 y_encoded)
-        features = [csr_matrix(intermediate_answers[self.primary_clfs[i]['name']]) for i in range(len(self.primary_clfs))]
+            #print "type(intermediate_answers[self.primary_clfs[i]['name']])", type(intermediate_answers[self.primary_clfs[i]['name']])
+            #print "intermediate_answers[self.primary_clfs[i]['name']].shape", intermediate_answers[self.primary_clfs[i]['name']].shape
+        if self.mode_ == 'BINARY':
+            features = [csr_matrix(intermediate_answers[self.primary_clfs[i]['name']]) for i in range(len(self.primary_clfs))]
+        else:
+            assert self.mode_ == 'MULTI'
+            # [clf1_cls1, clf1_cls2, clf1_cls3, clf2_cls1, clf2_cls2, clf2_cls3,]
+            features = [csr_matrix(intermediate_answers[self.primary_clfs[i]['name']][:, class_idx].reshape(-1, 1)) for i in range(len(self.primary_clfs)) for class_idx in range(len(self.classes_))]
         if not self.use_only_primary_clfs_results:
             features = [X] + features
+        #print 'len(features)', len(features)
+        #print 'features[0].shape in fit', features[0].shape
         X_intermediate = hstack(features)
+        #print 'X_intermediate.shape in fit', X_intermediate.shape
         self.clf.fit(X_intermediate, y_encoded)
+        #print 'fitted'
         return self
 
 
@@ -74,16 +122,55 @@ class StackingClassifier:
         nfolds = 5
         intermediate_answers = dict()
         for primary_clf in self.primary_clfs:
-            intermediate_answers[primary_clf['name']] = np.zeros((X.shape[0],))
-            intermediate_answers_skf = np.empty((nfolds, X.shape[0]))
+            if self.mode_ == 'BINARY':
+                intermediate_answers[primary_clf['name']] = np.zeros((X.shape[0],))
+            else:
+                intermediate_answers[primary_clf['name']] = np.zeros((len(self.classes_), X.shape[0]))
+            if self.mode_ == 'BINARY':
+                intermediate_answers_skf = np.empty((nfolds, X.shape[0]))
+            else:
+                assert self.mode_ == 'MULTI'
+                intermediate_answers_skf = [np.empty((nfolds, X.shape[0])) for class_idx in range(len(self.classes_))]
             for i in range(nfolds):
                 if self.primary_is_proba:
-                    intermediate_answers_skf[i, :] = map(operator.itemgetter(1),
-                                                         primary_clf['clfs'][i].predict_proba(X))
+                    if 'predict_proba' in dir(primary_clf['clfs'][i]):
+                        probas = primary_clf['clfs'][i].predict_proba(X)
+                        if self.mode_ == 'BINARY':
+                            intermediate_answers_skf[i, :] = map(operator.itemgetter(1), probas)
+                        else:
+                            assert self.mode_ == 'MULTI'
+                            for class_idx in range(len(self.classes_)):
+                                intermediate_answers_skf[class_idx][i, :] = map(operator.itemgetter(class_idx), probas)
+                    elif 'decision_function' in dir(primary_clf['clfs'][i]):
+                        scores = primary_clf['clfs'][i].decision_function(X)
+                        if self.mode_ == 'BINARY':
+                            assert type(scores[0]) is np.float64
+                            intermediate_answers_skf[i, :] = scores
+                        else:
+                            assert self.mode_ == 'MULTI'
+                            assert type(scores[0]) is np.ndarray
+                            for class_idx in range(len(self.classes_)):
+                                intermediate_answers_skf[class_idx][i, :] = map(operator.itemgetter(class_idx), scores)
+                    else:
+                        print >> sys.stderr, 'Error in StackingClassifier: parameter "primary_is_proba" is True, however one of primary classifiers has neither "predict_proba" method nor "decision_function". This classifier is "{}"\n'.format(type(primary_clf['clfs'][i]))
+                        exit(1)
                 else:
                     intermediate_answers_skf[i, :] = primary_clf['clfs'][i].predict(X)
-            intermediate_answers[primary_clf['name']][:] = intermediate_answers_skf.mean(axis=0)
-        features = [csr_matrix(intermediate_answers[primary_clf['name']].reshape(-1, 1)) for primary_clf in self.primary_clfs]
+            if self.mode_ == 'BINARY':
+                intermediate_answers[primary_clf['name']][:] = intermediate_answers_skf.mean(axis=0)
+            else:
+                assert self.mode_ == 'MULTI'
+                for class_idx in range(len(self.classes_)):
+                    #print 'intermediate_answers_skf[class_idx].shape', intermediate_answers_skf[class_idx].shape
+                    intermediate_answers[primary_clf['name']][class_idx][:] = intermediate_answers_skf[class_idx].mean(axis = 0)
+                #print "intermediate_answers[primary_clf['name']].shape in build_matrix_for_prediction", intermediate_answers[primary_clf['name']].shape
+        if self.mode_ == 'BINARY' or not self.primary_is_proba:
+            features = [csr_matrix(intermediate_answers[primary_clf['name']].reshape(-1, 1)) for primary_clf in self.primary_clfs]
+        else:
+            assert self.mode_ == 'MULTI'
+            features = [csr_matrix(intermediate_answers[primary_clf['name']][class_idx].reshape(-1, 1)) for primary_clf in self.primary_clfs for class_idx in range(len(self.classes_))]
+        #print 'len(features) in build_matrix_for_prediction', len(features)
+        #print 'features[0].shape in build_matrix_for_prediction', features[0].shape
         if not self.use_only_primary_clfs_results:
             features = [X] + features
         X_intermediate = hstack(features)
@@ -111,7 +198,9 @@ class StackingClassifier:
                   'use_only_primary_clfs_results': self.use_only_primary_clfs_results,
                   'primary_is_proba': self.primary_is_proba,
                   'label_encoder': self.label_encoder,
-                  'classes_': self.classes_}
+                  'classes_': self.classes_,
+                  'mode_': self.mode_,
+                  'version': self.version}
         for i in range(len(self.primary_clfs)):
             primary_clf_params = self.primary_clfs[i]['clf'].get_params()
             for k in primary_clf_params:
@@ -147,6 +236,12 @@ class StackingClassifier:
             if param == 'classes_':
                 if value is not None:
                     self.classes_ = value
+            if param == 'mode_':
+                if value is not None:
+                    self.mode_ = value
+            if param == 'version':
+                if value is not None:
+                    self.version = value
         primary_clf_indices = dict()
         for i in range(len(self.primary_clfs)):
             primary_clf_indices[self.primary_clfs[i]['name']] = i
