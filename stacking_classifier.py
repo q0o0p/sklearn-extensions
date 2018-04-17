@@ -28,6 +28,7 @@ class StackingClassifier:
         self.label_encoder = LabelEncoder()
         self.classes_ = None
         self.mode_ = None # BINARY or MULTI
+        self.primary_answers_choosing_method = 'MEANS' # 'MEANS', 'BEST_CLF', 'RANDOM_CLF'
 
 
     def train_subsets(self, clf, X, y):
@@ -160,9 +161,42 @@ class StackingClassifier:
                 intermediate_answers[primary_clf['name']][:] = intermediate_answers_skf.mean(axis=0)
             else:
                 assert self.mode_ == 'MULTI'
-                for class_idx in range(len(self.classes_)):
-                    #print 'intermediate_answers_skf[class_idx].shape', intermediate_answers_skf[class_idx].shape
-                    intermediate_answers[primary_clf['name']][class_idx][:] = intermediate_answers_skf[class_idx].mean(axis = 0)
+                if self.primary_answers_choosing_method == 'MEANS':
+                    for class_idx in range(len(self.classes_)):
+                        #print 'intermediate_answers_skf[class_idx].shape', intermediate_answers_skf[class_idx].shape
+                        intermediate_answers[primary_clf['name']][class_idx][:] = intermediate_answers_skf[class_idx].mean(axis = 0)
+                elif self.primary_answers_choosing_method == 'BEST_CLF':
+                    for object_idx in range(X.shape[0]):
+
+
+                        sorted_values = []
+                        for class_idx in range(len(self.classes_)):
+                            values = []
+                            for fold_idx in range(nfolds):
+                                values.append(intermediate_answers_skf[class_idx][fold_idx][object_idx])
+                            sorted_values.append(sorted(values))
+                        tuple_scores = []
+                        max_score = None
+                        max_score_tuple = None
+                        for fold_idx in range(nfolds):
+                            score = 0
+                            for class_idx in range(len(self.classes_)):
+                                curr_sorted_values = sorted_values[class_idx]
+                                for i in range((nfolds + 1) / 2):
+                                    if intermediate_answers_skf[class_idx][fold_idx][object_idx] == curr_sorted_values[i] or intermediate_answers_skf[class_idx][fold_idx][object_idx] == curr_sorted_values[nfolds - 1 - i]:
+                                        score += 10 ** i
+                            tuple_scores.append(score)
+                            if max_score is None or score > max_score:
+                                max_score = score
+                                max_score_tuple = [intermediate_answers_skf[class_idx][fold_idx][object_idx] for class_idx in range(len(self.classes_))]
+                        for class_idx in range(len(self.classes_)):
+                            intermediate_answers[primary_clf['name']][class_idx][object_idx] = max_score_tuple[class_idx]
+
+
+
+                else:
+                    assert self.primary_answers_choosing_method == 'RANDOM_CLF'
+                    pass # ToDo: implement
                 #print "intermediate_answers[primary_clf['name']].shape in build_matrix_for_prediction", intermediate_answers[primary_clf['name']].shape
         if self.mode_ == 'BINARY' or not self.primary_is_proba:
             features = [csr_matrix(intermediate_answers[primary_clf['name']].reshape(-1, 1)) for primary_clf in self.primary_clfs]
@@ -200,7 +234,8 @@ class StackingClassifier:
                   'label_encoder': self.label_encoder,
                   'classes_': self.classes_,
                   'mode_': self.mode_,
-                  'version': self.version}
+                  'version': self.version,
+                  'primary_answers_choosing_method': self.primary_answers_choosing_method}
         for i in range(len(self.primary_clfs)):
             primary_clf_params = self.primary_clfs[i]['clf'].get_params()
             for k in primary_clf_params:
@@ -242,6 +277,9 @@ class StackingClassifier:
             if param == 'version':
                 if value is not None:
                     self.version = value
+            if param == 'primary_answers_choosing_method':
+                if value is not None:
+                    self.primary_answers_choosing_method = value
         primary_clf_indices = dict()
         for i in range(len(self.primary_clfs)):
             primary_clf_indices[self.primary_clfs[i]['name']] = i
