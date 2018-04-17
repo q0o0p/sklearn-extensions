@@ -6,6 +6,7 @@
 import sys
 import operator
 import numpy as np
+from copy import deepcopy
 from sklearn import cross_validation
 from scipy.sparse import csr_matrix, hstack
 from sklearn.preprocessing import LabelEncoder
@@ -21,7 +22,7 @@ class StackingClassifier:
 
     def set_fields_by_default(self):
 
-        self.version = '0.0.1'
+        self.version = '0.0.2'
         self.random_state = 0
         self.use_only_primary_clfs_results = True
         self.primary_is_proba = False
@@ -48,19 +49,20 @@ class StackingClassifier:
             x_tr = X[train_index]
             y_tr = y[train_index]
             x_te = X[test_index]
-            clf.fit(x_tr, y_tr)
-            clfs.append(clf)
+            clf_copy = deepcopy(clf)
+            clf_copy.fit(x_tr, y_tr)
+            clfs.append(clf_copy)
             if self.primary_is_proba:
-                if 'predict_proba' in dir(clf):
-                    probas = clf.predict_proba(x_te)
+                if 'predict_proba' in dir(clf_copy):
+                    probas = clf_copy.predict_proba(x_te)
                     if self.mode_ == 'BINARY':
                         intermediate_answers[test_index] = map(operator.itemgetter(1),
                                                                probas)
                     else:
                         assert self.mode_ == 'MULTI'
                         intermediate_answers[test_index] = probas
-                elif 'decision_function' in dir(clf):
-                    scores = clf.decision_function(x_te)
+                elif 'decision_function' in dir(clf_copy):
+                    scores = clf_copy.decision_function(x_te)
                     if self.mode_ == 'BINARY':
                         assert type(scores[0]) is np.float64
                     else:
@@ -68,13 +70,11 @@ class StackingClassifier:
                         assert type(scores[0]) is np.ndarray
                     intermediate_answers[test_index] = scores
                 else:
-                    print >> sys.stderr, 'Error in StackingClassifier: parameter "primary_is_proba" is True, however one of primary classifiers has neither "predict_proba" method nor "decision_function". This classifier is "{}"\n'.format(type(clf))
+                    print >> sys.stderr, 'Error in StackingClassifier: parameter "primary_is_proba" is True, however one of primary classifiers has neither "predict_proba" method nor "decision_function". This classifier is "{}"\n'.format(type(clf_copy))
                     exit(1)
             else:
-                intermediate_answers[test_index] = clf.predict(x_te)
-        #print 'self.mode_', self.mode_
-        #print 'type(intermediate_answers)', type(intermediate_answers)
-        #print 'intermediate_answers.shape', intermediate_answers.shape
+                intermediate_answers[test_index] = clf_copy.predict(x_te)
+
         if self.mode_ == 'BINARY':
             return intermediate_answers.reshape(-1, 1), tuple(clfs)
         else:
@@ -157,6 +157,7 @@ class StackingClassifier:
                         exit(1)
                 else:
                     intermediate_answers_skf[i, :] = primary_clf['clfs'][i].predict(X)
+
             if self.mode_ == 'BINARY':
                 intermediate_answers[primary_clf['name']][:] = intermediate_answers_skf.mean(axis=0)
             else:
@@ -167,8 +168,6 @@ class StackingClassifier:
                         intermediate_answers[primary_clf['name']][class_idx][:] = intermediate_answers_skf[class_idx].mean(axis = 0)
                 elif self.primary_answers_choosing_method == 'BEST_CLF':
                     for object_idx in range(X.shape[0]):
-
-
                         sorted_values = []
                         for class_idx in range(len(self.classes_)):
                             values = []
@@ -182,8 +181,10 @@ class StackingClassifier:
                             score = 0
                             for class_idx in range(len(self.classes_)):
                                 curr_sorted_values = sorted_values[class_idx]
+                                val = intermediate_answers_skf[class_idx][fold_idx][object_idx]
                                 for i in range((nfolds + 1) / 2):
-                                    if intermediate_answers_skf[class_idx][fold_idx][object_idx] == curr_sorted_values[i] or intermediate_answers_skf[class_idx][fold_idx][object_idx] == curr_sorted_values[nfolds - 1 - i]:
+                                    if val == curr_sorted_values[i] or \
+                                       val == curr_sorted_values[nfolds - 1 - i]:
                                         score += 10 ** i
                             tuple_scores.append(score)
                             if max_score is None or score > max_score:
@@ -196,6 +197,7 @@ class StackingClassifier:
 
                 else:
                     assert self.primary_answers_choosing_method == 'RANDOM_CLF'
+                    assert False
                     pass # ToDo: implement
                 #print "intermediate_answers[primary_clf['name']].shape in build_matrix_for_prediction", intermediate_answers[primary_clf['name']].shape
         if self.mode_ == 'BINARY' or not self.primary_is_proba:
