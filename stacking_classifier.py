@@ -4,6 +4,7 @@
 """
 
 import sys
+import random
 import operator
 import numpy as np
 from copy import deepcopy
@@ -192,13 +193,13 @@ class StackingClassifier:
                                 max_score_tuple = [intermediate_answers_skf[class_idx][fold_idx][object_idx] for class_idx in range(len(self.classes_))]
                         for class_idx in range(len(self.classes_)):
                             intermediate_answers[primary_clf['name']][class_idx][object_idx] = max_score_tuple[class_idx]
-
-
-
                 else:
                     assert self.primary_answers_choosing_method == 'RANDOM_CLF'
-                    assert False
-                    pass # ToDo: implement
+                    for object_idx in range(X.shape[0]):
+                        random_fold = random.randint(1, 5) - 1
+                        max_score_tuple = [intermediate_answers_skf[class_idx][random_fold][object_idx] for class_idx in range(len(self.classes_))]
+                        for class_idx in range(len(self.classes_)):
+                            intermediate_answers[primary_clf['name']][class_idx][object_idx] = max_score_tuple[class_idx]
                 #print "intermediate_answers[primary_clf['name']].shape in build_matrix_for_prediction", intermediate_answers[primary_clf['name']].shape
         if self.mode_ == 'BINARY' or not self.primary_is_proba:
             features = [csr_matrix(intermediate_answers[primary_clf['name']].reshape(-1, 1)) for primary_clf in self.primary_clfs]
