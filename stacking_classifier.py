@@ -1,6 +1,7 @@
 # -*- coding: utf-8 -*-
 """
 @author: Anna Klepova (inspired by Faron from Kaggle)
+https://github.com/q0o0p/sklearn-extensions
 """
 
 import sys
@@ -96,6 +97,9 @@ class StackingClassifier:
             self.mode_ = 'MULTI'
         intermediate_answers = dict()
         for i in range(len(self.primary_clfs)):
+            if self.primary_clfs[i]['name'] in intermediate_answers:
+                print >> sys.stderr, 'Error in StackingClassifier: names of primary classifiers are not unique\n'
+                exit(1)
             (intermediate_answers[self.primary_clfs[i]['name']],
              self.primary_clfs[i]['clfs']) = self.train_subsets(self.primary_clfs[i]['clf'],
                                                                 X,
